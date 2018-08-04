@@ -54,8 +54,7 @@ class QNetwork(nn.Module):
         return output, hx, zs
 
     def forward(self, x, y, hx=None):
-        # get context from inputs
-        #TODO: check dim argument
+        #TODO: check correctness of getting BRNN outputs
         input_ = torch.cat((x, y), dim=2)
         output, (h_n, c_n) = self.brnn(input_)
         # forward = output[-1, :, :self.hidden_size]
@@ -68,13 +67,13 @@ class QNetwork(nn.Module):
         T, batch_size, _ = input_.size()
         if hx is None:
             hx = Variable(input_.data.new(batch_size, self.hidden_size).zero_())
-            hx = [(hx, hx) for _ in range(self.num_layers)]
+            hx = [(hx, hx)]
         layer_output = None
         new_hx = []
         for layer in range(self.num_layers):
             global global_layer
             global_layer = layer
-            cell = self.get_cell(layer)
+            cell = InferenceCell(self.input_size, self.hidden_size)
             layer_output, (layer_h_n, layer_c_n), zs = QNetwork._forward_rnn(
                 cell=cell, input_=x, hx=hx[layer], b=context)
             new_hx.append((layer_h_n, layer_c_n))
@@ -115,6 +114,66 @@ class QCell(nn.Module):
         y, h_1 = self.output(x, h_0, z)
         return y, h_1, z
     
+
+#QInferenceWrapper(x, y,) -> b -> z
+class QInferenceWrapper(nn.Module):
+    # TODO: add more arguments per QNetwork
+    def __init__(self, input_size, hidden_size, num_layers=1):
+        super(QInferenceWrapper, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.brnn = nn.LSTM(2 * input_size, hidden_size, bidirectional=True)
+        self.num_layers = num_layers
+
+        for layer in range(self.num_layers):
+            layer_input_size = input_size if layer == 0 else hidden_size
+            cell = InferenceCell(layer_input_size, hidden_size)
+            setattr(self, 'cell_{}'.format(layer), cell)
+        self.reset_parameters()
+
+    def get_cell(self, layer):
+        return getattr(self, 'cell_{}'.format(layer))
+
+    def reset_parameters(self):
+        for layer in range(self.num_layers):
+            cell = self.get_cell(layer)
+            cell.reset_parameters()
+
+    @staticmethod
+    def _forward_rnn(cell, input_, b):
+        T = input_.size(0)
+        output = []
+        zs = []
+        for t in range(T):
+            z = cell(b[t].unsqueeze(0))
+            output.append(z)
+        output = torch.stack(output, 0)
+        return output
+
+    def forward(self, x, y, hx=None):
+        input_ = torch.cat((x, y), dim=2)
+        output, (h_n, c_n) = self.brnn(input_)
+        # forward = output[-1, :, :self.hidden_size]
+        # reverse = output[0, :, self.hidden_size:]
+        forward = output[:, 0, :self.hidden_size]
+        reverse = output[:, 0, self.hidden_size:]
+        context = torch.cat((forward, reverse), dim=1)
+
+        # run through layers and cells
+        T, batch_size, _ = input_.size()
+        if hx is None:
+            hx = Variable(input_.data.new(batch_size, self.hidden_size).zero_())
+            hx = [(hx, hx) for _ in range(self.num_layers)]
+        layer_output = None
+        for layer in range(self.num_layers):
+            global global_layer
+            global_layer = layer
+            cell = self.get_cell(layer)
+            layer_output = QInferenceWrapper._forward_rnn(
+                cell=cell, input_=x, b=context)
+        output = layer_output
+        return output
+
 class InferenceCell(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(InferenceCell, self).__init__()
@@ -123,6 +182,11 @@ class InferenceCell(nn.Module):
 
         self.fc1 = nn.Linear(2*hidden_size, hidden_size)
         # TODO: add more layers here
+
+    def reset_parameters(self):
+        stdv = 1.0 / math.sqrt(self.hidden_size)
+        for weight in self.parameters():
+            weight.data.uniform_(-stdv, stdv)
 
     def forward(self, b):
         layer = F.relu(self.fc1(b))

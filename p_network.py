@@ -4,8 +4,6 @@ import math
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-from inspect import signature
-
 ### P Network ###
 # \prod p(y_t, h_t | h_t-1, x_t)
 
@@ -92,6 +90,8 @@ class PCell(nn.Module):
         y, h_1 = self.output(x, h_0, z)
         return y, h_1, z
 
+#PTrainWrapper(x, hx) -> z
+
 class TrainCell(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(TrainCell, self).__init__()
@@ -102,16 +102,38 @@ class TrainCell(nn.Module):
         self.fc1 = nn.Linear(input_size + 2*hidden_size, hidden_size)
 
     def forward(self, x, hx):
-        #TODO: check dim
-        print(x.size())
         h, c = hx
         input_ = torch.cat((x, h, c), dim=1)
-        print(input_.size())
 
         layer = F.relu(self.fc1(input_))
         z = F.sigmoid(layer)
-        print(z.size())
         return x, hx, z
+
+class OutputWrapper(nn.Module):
+    def __init__(self, input_size, hidden_size, T):
+        super(OutputWrapper, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.T = T
+
+        for t in range(T):
+            cell = OutputCell(input_size, hidden_size)
+            setattr(self, 'cell_{}'.format(t), cell)
+
+    def get_cell(self, t):
+        return getattr(self, 'cell_{}'.format(t))
+
+    def forward(self, x, z):
+        h = Variable(torch.zeros(1, self.hidden_size))
+        h = (h, h)
+        output = []
+        for t in range(self.T):
+            cell = self.get_cell(t)
+            y, h_1 = cell(x[t], h, z[t])
+            output.append(y)
+            h = h_1
+        output = torch.stack(output, 0)
+        return output
 
 class OutputCell(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -147,7 +169,7 @@ class OutputCell(nn.Module):
         c_1 = (f * c_0) + (i * g)
         h_1 = o * F.tanh(c_1)
 
-        hy = (c_1, h_1)
+        hy = (h_1, c_1)
 
         y = F.relu(self.fc1(h_1))
 
