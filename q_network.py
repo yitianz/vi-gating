@@ -14,7 +14,7 @@ from p_network import OutputCell
 # 3. z, x -> y
 
 class QNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size, T, num_layers=1, bias=True, dropout=0):
+    def __init__(self, input_size, hidden_size, T, num_layers=1, bias=True, dropout=0, eps=1e-6):
         super(QNetwork, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -22,6 +22,7 @@ class QNetwork(nn.Module):
         self.num_layers = num_layers
         self.bias = bias
         self.dropout = dropout
+        self.eps=eps
 
         self.brnn = nn.LSTM(2 * input_size, hidden_size, bidirectional=True, batch_first=True)
 
@@ -45,7 +46,7 @@ class QNetwork(nn.Module):
         log_prob = []
         for t in range(self.T):
             prob_t, h_next = cell(x[:,t], h, b[:,t].unsqueeze(0), z_sample)
-            log_prob.append(torch.log(prob_t))
+            log_prob.append(torch.log(prob_t+self.eps))
             h = h_next
         sum = torch.sum(torch.stack(log_prob))
         return sum, h
@@ -111,10 +112,11 @@ class QNetwork(nn.Module):
         # return samples
 
 class QCell(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, hidden_size, eps=1e-6):
         super(QCell, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.eps = eps
 
         self.output = OutputCell(input_size, hidden_size)
 

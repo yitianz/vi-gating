@@ -33,24 +33,21 @@ class PNetwork(nn.Module):
             cell = self.get_cell(layer)
             cell.reset_parameters()
 
+    def evaluate(self):
+        return self.y_preds
+
+
     def _forward(self, cell, x, y, z, h):
         log_prob = []
+        y_preds = []
         for t in range(self.T):
-            prob_t, h_next = cell(h, x[:,t], y[:,t], z[:,t])
-            log_prob.append(torch.log(prob_t))
+            log_prob_t, h_next, y_pred = cell(h, x[:,t], y[:,t], z[:,t])
+            log_prob.append(log_prob_t)
+            y_preds.append(y_pred)
             h = h_next
         sum = torch.sum(torch.stack(log_prob))
+        self.y_preds = torch.stack(y_preds, dim=1)
         return sum, h
-
-    # Pseudocode
-    # def log_prob(self, x, y, z):
-    #     log_prob = []
-    #     h = torch.zeros(self.batch_size, self.hidden_size)
-    #     h = (h, h)
-    #     for t in range(self.T):
-    #         h, log_prob_t = p_cell(h, x[:,t], y[:,t], z[:, t])
-    #         log_prob.append(log_prob_t)
-    #     return torch.sum(torch.stack(log_prob))
 
     def forward(self, x, y, z):
         batch_size, T, _ = x.size()
@@ -72,10 +69,11 @@ class PNetwork(nn.Module):
 # h_t = OutputCell(h_t-1, x_t, z_t)
 
 class PCell(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, hidden_size, eps=1e-6):
         super(PCell, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.eps = eps
         self.train_c = TrainCell(input_size, hidden_size)
         self.output = OutputCell(input_size, hidden_size)
         
@@ -89,13 +87,13 @@ class PCell(nn.Module):
     def forward(self, h, x, y, z_sample):
         x, h, z = self.train_c(x, h)
         # print('P network: x: {}, h: {}, z: {}'.format(x.size(), h_0[0].size(), z.size()))
-        # TODO: check that should be using sampled z in this part
         y, h_next = self.output(x, h, z_sample)
-        print('z: {}'.format(z))
-        print('y: {}'.format(y))
+        # print('z: {}'.format(z))
+        # print('y: {}'.format(y))
         # TODO: is this returning the right thing?
-        log_prob = torch.log(z) + torch.log(y)
-        return log_prob, h_next
+        log_prob = torch.log(z+self.eps) + torch.log(y+self.eps)
+        # print('log prob: {}'.format(log_prob))
+        return log_prob, h_next, y
 
 class TrainCell(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -176,13 +174,13 @@ class OutputCell(nn.Module):
         o = F.sigmoid(o)
 
         c_1 = (f * c_0) + (i * g)
+        # print('c_1: {}'.format(c_1))
         h_1 = o * F.tanh(c_1)
-
         hy = (h_1, c_1)
-        print('h_1: {}'.format(h_1))
+        # print('h_1: {}'.format(h_1))
         #TODO: figure out what this network should be based on true y
         y = F.relu(self.fc1(h_1))
-
+        y = F.sigmoid(y)
         return y, hy
 
         
