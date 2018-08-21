@@ -23,7 +23,7 @@ from p_network import TrainCell
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ### Config ###
-num_epochs = 20
+num_epochs = 100
 num_data = 10
 batch_size = 5
 num_batches = int(num_data / batch_size)
@@ -71,11 +71,12 @@ def generate_data():
         index = x.index(1)
         y = [0 for _ in range(index)] + [1 for _ in range(len(x) - index)]
         ys.append(y)
-    remainder = num_batches % batch_size
-    while remainder != 0:
-        xs.append([0 for _ in range(seq_length)])
-        ys.append([0 for _ in range(seq_length)])
-        remainder -= 1
+    if num_batches > batch_size:
+        remainder = num_batches % batch_size
+        while remainder != 0:
+            xs.append([0 for _ in range(seq_length)])
+            ys.append([0 for _ in range(seq_length)])
+            remainder -= 1
     xs = torch.Tensor(xs).unsqueeze(2).to(device)
     ys = torch.Tensor(ys).unsqueeze(2).to(device)
     print('x: {}'.format(xs[:, :, 0]))
@@ -97,6 +98,8 @@ def train(xs, ys):
         for b in range(0, num_batches, batch_size):
             
             z = q.sample(xs[b:b+batch_size], ys[b:b+batch_size], 0)
+            # TODO: detach to prevent BPTT?
+            z = z.detach()
             # print("main: {}".format(z.size()))
             """ z : [batch_size x seq_length x num_gates] """
             # log p(z, y | x)
@@ -117,7 +120,7 @@ def train(xs, ys):
             train_loss += loss.item()
         print("train loss epoch {} : {}".format(epoch, train_loss / ((epoch+1) * batch_size)))
         # print("y loss epoch {} : {}".format(epoch, y_loss / ((epoch+1) * batch_size)))
-#TODO: roll out predict y
+
 def test(xs, ys):
     q.eval()
     p.eval()
@@ -134,7 +137,7 @@ def test(xs, ys):
             log_q, _ = q(xs[b:b+batch_size], ys[b:b+batch_size], z)
 
             y_preds = p.evaluate()
-            print(y_preds[:,:,0])
+            # print(y_preds[:,:,0])
             y_loss += nn.MSELoss()(y_preds, ys[b:b+batch_size])
 
             loss = -(log_p - log_q) * log_q

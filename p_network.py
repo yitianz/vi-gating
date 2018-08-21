@@ -175,7 +175,7 @@ class OutputCell(nn.Module):
         #TODO: figure out what this network should be based on true y
         y = F.relu(self.fcy(h_1))
         # print('output: {}'.format(y))
-        # y = F.sigmoid(y)
+        y = F.sigmoid(y)
         return y, hy
 
         
