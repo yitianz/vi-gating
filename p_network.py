@@ -42,6 +42,7 @@ class PNetwork(nn.Module):
         y_preds = []
         for t in range(self.T):
             log_prob_t, h_next, y_pred = cell(h, x[:,t], y[:,t], z[:,t])
+            # print(y_pred)
             log_prob.append(log_prob_t)
             y_preds.append(y_pred)
             h = h_next
@@ -85,13 +86,14 @@ class PCell(nn.Module):
             weight.data.uniform_(-stdv, stdv)
 
     def forward(self, h, x, y, z_sample):
+        # print(z_sample.size())
         x, h, z = self.train_c(x, h)
         # print('P network: x: {}, h: {}, z: {}'.format(x.size(), h_0[0].size(), z.size()))
         y, h_next = self.output(x, h, z_sample)
+        # print('pcell: {}'.format(y))y
         # print('z: {}'.format(z))
         # print('y: {}'.format(y))
-        # TODO: is this returning the right thing?
-        log_prob = torch.log(z+self.eps) + torch.log(y+self.eps)
+        log_prob = torch.log(z+self.eps) + torch.log(y[:, None]+self.eps)
         # print('log prob: {}'.format(log_prob))
         return log_prob, h_next, y
 
@@ -100,43 +102,27 @@ class TrainCell(nn.Module):
         super(TrainCell, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        
-        # TODO: figure out right network
-        self.fc1 = nn.Linear(input_size + 2*hidden_size, hidden_size)
+
+        self.weight_ih = nn.Parameter(torch.Tensor(input_size, 2 * hidden_size))
+        self.weight_hh = nn.Parameter(torch.Tensor(hidden_size, 2 * hidden_size))
+        self.bias_ih = nn.Parameter(torch.Tensor(2 * hidden_size))
+        self.bias_hh = nn.Parameter(torch.Tensor(2 * hidden_size))
 
     def forward(self, x, hx):
         h, c = hx
-        input_ = torch.cat((x, h, c), dim=1)
 
-        layer = F.relu(self.fc1(input_))
-        z = F.sigmoid(layer)
+        wh = h.mm(self.weight_hh) + self.bias_hh
+        wi = x.mm(self.weight_ih) + self.bias_ih
+        i, f = torch.split(wh + wi, split_size_or_sections=self.hidden_size, dim=1)
+        i = F.sigmoid(i)
+        # print(i.size())
+        f = F.sigmoid(f)
+        # print(i.size())
+
+        z = torch.cat((i, f),dim=1)
+        # print('z: {}'.format(z.size()))
+
         return x, hx, z
-
-class OutputWrapper(nn.Module):
-    def __init__(self, input_size, hidden_size, T):
-        super(OutputWrapper, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.T = T
-
-        for t in range(T):
-            cell = OutputCell(input_size, hidden_size)
-            setattr(self, 'cell_{}'.format(t), cell)
-
-    def get_cell(self, t):
-        return getattr(self, 'cell_{}'.format(t))
-
-    def forward(self, x, z):
-        h = Variable(torch.zeros(1, self.hidden_size))
-        h = (h, h)
-        output = []
-        for t in range(self.T):
-            cell = self.get_cell(t)
-            y, h_1 = cell(x[t], h, z[t])
-            output.append(y)
-            h = h_1
-        output = torch.stack(output, 0)
-        return output
 
 class OutputCell(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -152,7 +138,7 @@ class OutputCell(nn.Module):
         self.bias_ih = nn.Parameter(torch.Tensor(2 * hidden_size))
         self.bias_hh = nn.Parameter(torch.Tensor(2 * hidden_size))
         
-        self.fc1 = nn.Linear(hidden_size, input_size)
+        self.fcy = nn.Linear(hidden_size, input_size)
 
         self.reset_parameters()
 
@@ -162,25 +148,34 @@ class OutputCell(nn.Module):
             weight.data.uniform_(-stdv, stdv)
         
     def forward(self, x, hx, z):
+        """ 
+            x : [batch_size x input_size]
+            z : [batch_size x num_gates]
+            hx : ([batch_size x hidden_size], ...)
+        """
         h_0, c_0 = hx
-        i = z[:,0]
-        f = z[:,1]
+        # print(z.size())
+        i = z[:,:self.hidden_size]
+        f = z[:,self.hidden_size:]
+        # print(i.size())
 
+        # print("h_0: {}".format(h_0.size()))
+        # print("weight: {}".format(self.weight_hh.size()))
         wh = h_0.mm(self.weight_hh) + self.bias_hh
         wi = x.mm(self.weight_ih) + self.bias_ih
         g, o = torch.split(wh + wi, split_size_or_sections=self.hidden_size, dim=1)
         
         g = F.tanh(g)
         o = F.sigmoid(o)
-
         c_1 = (f * c_0) + (i * g)
         # print('c_1: {}'.format(c_1))
         h_1 = o * F.tanh(c_1)
         hy = (h_1, c_1)
         # print('h_1: {}'.format(h_1))
         #TODO: figure out what this network should be based on true y
-        y = F.relu(self.fc1(h_1))
-        y = F.sigmoid(y)
+        y = F.relu(self.fcy(h_1))
+        # print('output: {}'.format(y))
+        # y = F.sigmoid(y)
         return y, hy
 
         
