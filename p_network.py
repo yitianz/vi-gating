@@ -36,13 +36,11 @@ class PNetwork(nn.Module):
     def evaluate(self):
         return self.y_preds
 
-
     def _forward(self, cell, x, y, z, h):
         log_prob = []
         y_preds = []
         for t in range(self.T):
             log_prob_t, h_next, y_pred = cell(h, x[:,t], y[:,t], z[:,t])
-            # print(y_pred)
             log_prob.append(log_prob_t)
             y_preds.append(y_pred)
             h = h_next
@@ -75,8 +73,8 @@ class PCell(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.eps = eps
-        self.train_c = TrainCell(input_size, hidden_size)
-        self.output = OutputCell(input_size, hidden_size)
+        self.zcell = ZCell(input_size, hidden_size)
+        self.ycell = YCell(input_size, hidden_size)
         
         self.reset_parameters()
 
@@ -85,21 +83,22 @@ class PCell(nn.Module):
         for weight in self.parameters():
             weight.data.uniform_(-stdv, stdv)
 
-    def forward(self, h, x, y, z_sample):
+    def forward(self, h, x, y_true, z_sample):
         # print(z_sample.size())
-        x, h, z = self.train_c(x, h)
+        prob_z = self.zcell(x, h, z_sample)
         # print('P network: x: {}, h: {}, z: {}'.format(x.size(), h_0[0].size(), z.size()))
-        y, h_next = self.output(x, h, z_sample)
+        y_pred, h_next, prob_y = self.ycell(x, h, z_sample, y_true)
         # print('pcell: {}'.format(y))y
         # print('z: {}'.format(z))
         # print('y: {}'.format(y))
-        log_prob = torch.log(z+self.eps) + torch.log(y[:, None]+self.eps)
+        # log_prob = torch.log(z_sample+self.eps) + torch.log(y[:, None]+self.eps)
+        prob = prob_z + prob_y
         # print('log prob: {}'.format(log_prob))
-        return log_prob, h_next, y
+        return prob, h_next, y_pred
 
-class TrainCell(nn.Module):
+class ZCell(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(TrainCell, self).__init__()
+        super(ZCell, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
 
@@ -108,7 +107,7 @@ class TrainCell(nn.Module):
         self.bias_ih = nn.Parameter(torch.Tensor(2 * hidden_size))
         self.bias_hh = nn.Parameter(torch.Tensor(2 * hidden_size))
 
-    def forward(self, x, hx):
+    def forward(self, x, hx, z_sample):
         h, c = hx
 
         wh = h.mm(self.weight_hh) + self.bias_hh
@@ -122,11 +121,12 @@ class TrainCell(nn.Module):
         z = torch.cat((i, f),dim=1)
         # print('z: {}'.format(z.size()))
 
-        return x, hx, z
+        prob = (z_sample * torch.log(z)) + ((1 - z_sample) * torch.log((1 - z)))
+        return prob
 
-class OutputCell(nn.Module):
+class YCell(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(OutputCell, self).__init__()
+        super(YCell, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         
@@ -138,7 +138,8 @@ class OutputCell(nn.Module):
         self.bias_ih = nn.Parameter(torch.Tensor(2 * hidden_size))
         self.bias_hh = nn.Parameter(torch.Tensor(2 * hidden_size))
         
-        self.fcy = nn.Linear(hidden_size, input_size)
+        self.fcy1 = nn.Linear(hidden_size, 10*hidden_size)
+        self.fcy2 = nn.Linear(10*hidden_size, input_size)
 
         self.reset_parameters()
 
@@ -147,7 +148,7 @@ class OutputCell(nn.Module):
         for weight in self.parameters():
             weight.data.uniform_(-stdv, stdv)
         
-    def forward(self, x, hx, z):
+    def forward(self, x, hx, z, y_true):
         """ 
             x : [batch_size x input_size]
             z : [batch_size x num_gates]
@@ -172,11 +173,13 @@ class OutputCell(nn.Module):
         h_1 = o * F.tanh(c_1)
         hy = (h_1, c_1)
         # print('h_1: {}'.format(h_1))
-        #TODO: figure out what this network should be based on true y
-        y = F.relu(self.fcy(h_1))
-        # print('output: {}'.format(y))
+        #TODO: add more layers here?
+        y = F.relu(self.fcy1(h_1))
+        y = F.relu(self.fcy2(y))
         y = F.sigmoid(y)
-        return y, hy
+        prob = (y_true * torch.log(y)) + (1 - y_true) * torch.log((1 - y))
+        # print('output: {}'.format(y))
+        return y, hy, prob
 
         
 

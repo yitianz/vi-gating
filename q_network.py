@@ -5,7 +5,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-from p_network import OutputCell
+from p_network import YCell
 
 ### Q Network ###
 # \prod q(z_t | x_t, y_t)
@@ -42,24 +42,21 @@ class QNetwork(nn.Module):
 
 # log_q = \sum_t log(z_t | b_t, h_t-1)
 # b_t = BRNN(x, y)
-    def _forward(self, cell, x, h, b, z_sample=None):
+    def _forward(self, cell, x, h, b, y, z_sample):
         log_prob = []
         for t in range(self.T):
             # print(t)
-            prob_t, h_next = cell(x[:,t], h, b[:,t].unsqueeze(0), z_sample[:,t])
-            log_prob.append(torch.log(prob_t+self.eps))
+            prob_t, h_next = cell(x[:,t], h, b[:,t].unsqueeze(0), y[:,t], z_sample[:,t])
+            log_prob.append(prob_t)
             h = h_next
         sum = torch.sum(torch.stack(log_prob))
         return sum, h
 
-    def forward(self, x, y, z):
+    def forward(self, x, y, z_sample):
         input_ = torch.cat((x, y), dim=2)
         output, (h_n, c_n) = self.brnn(input_)
         context = output
-        # forward = output[:, 0, :self.hidden_size]
-        # reverse = output[:, 0, self.hidden_size:]
-        # context = torch.cat((forward, reverse), dim=1)
-        # run through layers and cells
+    
         batch_size, T, _ = x.size()
         h = torch.zeros(batch_size, self.hidden_size)
         h = [(h, h) for _ in range(self.num_layers)]
@@ -70,7 +67,8 @@ class QNetwork(nn.Module):
             global global_layer
             global_layer = layer
             cell = QCell(self.input_size, self.hidden_size)
-            layer_output, (layer_h_n, layer_c_n)= self._forward(cell=cell, x=x, h=h[layer], b=context, z_sample=z)
+            layer_output, (layer_h_n, layer_c_n)= self._forward(cell=cell, x=x, h=h[layer], b=context, y=y, z_sample=z_sample)
+            # print('forward : {}'.format(layer_output))
             new_hx.append((layer_h_n, layer_c_n))
         output = layer_output
         return output, new_hx
@@ -98,6 +96,7 @@ class QNetwork(nn.Module):
             global_layer = layer
             cell = QCell(self.input_size, self.hidden_size)
             layer_output = self._sample(cell=cell, x=x, h=h[layer], b=context)
+            # print('sampling: {}'.format(layer_output))
             zs.append(layer_output)
         samples = []
         for layer in range(self.num_layers):
@@ -113,10 +112,12 @@ class QCell(nn.Module):
         self.hidden_size = hidden_size
         self.eps = eps
 
-        self.output = OutputCell(input_size, hidden_size)
+        self.ycell = YCell(input_size, hidden_size)
 
-        self.fc1 = nn.Linear(2*hidden_size, 2*hidden_size)
-        # TODO: add more layers here
+        self.weight_ih = nn.Parameter(torch.Tensor(input_size, 2 * hidden_size))
+        self.weight_hh = nn.Parameter(torch.Tensor(hidden_size, 2 * hidden_size))
+        self.bias_ih = nn.Parameter(torch.Tensor(2 * hidden_size))
+        self.bias_hh = nn.Parameter(torch.Tensor(2 * hidden_size))
 
         self.reset_parameters()
 
@@ -125,12 +126,14 @@ class QCell(nn.Module):
         for weight in self.parameters():
             weight.data.uniform_(-stdv, stdv)
 
-    def forward(self, x, h, b, z_sample=None):
-        layer = F.relu(self.fc1(b))
-        z = F.sigmoid(layer)
+    def forward(self, x, hx, b, y, z_sample=None):
+        z = F.sigmoid(b)
+
+        # print('z: {}'.format(z.size()))
         if z_sample is not None:
-            _, h_next = self.output(x, h, z_sample)
-            return z, h_next
+            prob = (z_sample * torch.log(z)) + ((1 - z_sample) * torch.log((1 - z)))
+            _, h_next, _ = self.ycell(x, hx, z_sample, y)
+            return prob, h_next
         else:
             return z, None
         

@@ -16,22 +16,29 @@ import q_network
 from p_network import PNetwork
 from q_network import QNetwork
 
-from p_network import OutputCell
-from p_network import TrainCell
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ### Config ###
-num_epochs = 100
+log_interval = 20
+num_epochs = 1000
 num_data = 10
 batch_size = 5
 num_batches = int(num_data / batch_size)
-seq_length = 50
+seq_length = 20
 num_layers = 1
 input_size = 1
 hidden_size = 2
-lr = 1e-3
+lr = 1e-2
+
+# Set the random seed manually for reproducibility.
+# np.random.seed(args.seed)
+# torch.manual_seed(args.seed)
+# if torch.cuda.is_available():
+#     if not args.cuda:
+#         message("WARNING: You have a CUDA device, so you should probably run with --cuda")
+#     else:
+#         torch.cuda.manual_seed(args.seed)
 
 def make_dot(var):
     node_attr = dict(style='filled',
@@ -86,22 +93,21 @@ def generate_data():
 q = QNetwork(input_size, hidden_size, seq_length).to(device)
 p = PNetwork(input_size, hidden_size, seq_length).to(device)
 params = list(q.parameters()) + list(p.parameters())
-optimizer = torch.optim.Adagrad(params)
+optimizer = torch.optim.Adagrad(params, lr=lr)
 
 
 def train(xs, ys):
     q.train()
     p.train()
-    print(p.get_cell(0).output.fcy.weight)
     train_loss = 0
     for epoch in range(num_epochs):
         for b in range(0, num_batches, batch_size):
             
             z = q.sample(xs[b:b+batch_size], ys[b:b+batch_size], 0)
-            # TODO: detach to prevent BPTT?
             z = z.detach()
+            # print(z.size())
             # print("main: {}".format(z.size()))
-            """ z : [batch_size x seq_length x num_gates] """
+            """ z : [batch_size x seq_length x (num_gates * hidden_size)] """
             # log p(z, y | x)
             log_p, _ = p(xs[b:b+batch_size], ys[b:b+batch_size], z)
             # log q(z | x, y)
@@ -113,19 +119,20 @@ def train(xs, ys):
             g = make_dot(log_q)
             # g.view()
             # score function trick
-            loss = -(log_p - log_q) * log_q
+            opt_loss = -( (log_q * (log_p - log_q).detach()) + (log_p - log_q) )
+            obj_loss = -(log_p - log_q)
+            if epoch % log_interval == 0:
+                print('objective loss epoch {}: {}'.format(epoch, obj_loss.item()))
+                # print('optimization loss epoch {}: {}'.format(epoch, opt_loss.item()))
             optimizer.zero_grad()
-            loss.backward()
+            opt_loss.backward()
             optimizer.step()
-            train_loss += loss.item()
-        print("train loss epoch {} : {}".format(epoch, train_loss / ((epoch+1) * batch_size)))
-        # print("y loss epoch {} : {}".format(epoch, y_loss / ((epoch+1) * batch_size)))
+            train_loss += opt_loss.item()
 
 def test(xs, ys):
     q.eval()
     p.eval()
     print(p)
-    print(p.get_cell(0).output.fcy.weight)
     test_loss = 0
     y_loss = 0
     for epoch in range(num_epochs):
@@ -136,19 +143,28 @@ def test(xs, ys):
             # log q(z | x, y)
             log_q, _ = q(xs[b:b+batch_size], ys[b:b+batch_size], z)
 
-            y_preds = p.evaluate()
-            # print(y_preds[:,:,0])
-            y_loss += nn.MSELoss()(y_preds, ys[b:b+batch_size])
+           
+            # y_loss += nn.MSELoss()(y_preds, ys[b:b+batch_size])
 
-            loss = -(log_p - log_q) * log_q
-            test_loss += loss.item()
-        print("test loss epoch {} : {}".format(epoch, test_loss / ((epoch+1) * batch_size)))
+            opt_loss = -( (log_q * (log_p - log_q).detach()) + (log_p - log_q) )
+            obj_loss = -(log_p - log_q)
+            test_loss += opt_loss.item()
+            if epoch % log_interval == 0:
+                print('objective loss epoch {}: {}'.format(epoch, obj_loss.item()))
+                print('x: {}'.format(xs[b:b+batch_size, :, 0]))
+                y_preds = p.evaluate()
+                print('y: {}'.format(y_preds[:,:,0]))
+                squared_loss = lambda a, b : ((a - b) ** 2)
+                y_loss = torch.mean(squared_loss(y_preds, ys[b:b+batch_size]))
+                print('y loss: {}'.format(y_loss.item()))
 
 xs_train, ys_train = generate_data()
 train(xs_train, ys_train)
 
 xs_test, ys_test = generate_data()
 test(xs_test, ys_test)
+
+
 
 
 
